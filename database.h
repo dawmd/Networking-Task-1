@@ -1,3 +1,6 @@
+#ifndef __MESSAGE_SERVER_DATABASE__
+#define __MESSAGE_SERVER_DATABASE__
+
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -7,11 +10,13 @@
 #include <cstring> // for memcpy
 #include <exception>
 
+
 ///////////////////////////
 ///                     ///
 ///     CONSTANTS       ///
 ///                     ///
 ///////////////////////////
+
 
 constexpr uint32_t MIN_RESERVATION_ID = 10e6;
 constexpr int COOKIE_LEN = 48;
@@ -100,6 +105,18 @@ struct Event {
     uint32_t event_id;
     const std::string description;
     uint16_t ticket_count;
+
+    Event(uint32_t event_id_, std::string &&description_, uint16_t ticket_count_)
+    : event_id(event_id_)
+    , description(std::move(description_))
+    , ticket_count(ticket_count_) {}
+
+    Event(uint32_t event_id_, const std::string &description_, uint16_t ticket_count_)
+    : event_id(event_id_)
+    , description(description_)
+    , ticket_count(ticket_count_) {}
+
+    ~Event() = default;
 };
 
 struct Reservation {
@@ -184,13 +201,24 @@ private:
     std::unordered_map<uint32_t, ReservationInfo> reservations;
     std::queue<ReservationTime> reservation_queue;
     uint32_t next_reservation_id = MIN_RESERVATION_ID;
-    char base_ticket[TICKET_LEN] = { '0' };
+    char base_ticket[TICKET_LEN];
 
 /* Methods */
 public:
     Database(uint64_t timeout_ = DEFAULT_TIMEOUT)
-    : timeout(timeout_) {}
+    : timeout(timeout_)
+    {
+        memset(base_ticket, '0', TICKET_LEN);
+    }
     ~Database() = default;
+
+    void add_event(std::string &&description, uint16_t ticket_count) {
+        events.push_back(Event(events.size(), std::move(description), ticket_count));
+    }
+
+    void add_event(const std::string &description, uint16_t ticket_count) {
+        events.push_back(Event(events.size(), description, ticket_count));
+    }
 
     event_iterator events_begin() const noexcept {
         return events.cbegin();
@@ -302,3 +330,4 @@ private:
 };
 
 
+#endif // __MESSAGE_SERVER_DATABASE__
