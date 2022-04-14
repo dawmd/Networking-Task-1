@@ -7,12 +7,43 @@
 #include <chrono>
 #include <exception>
 #include <cstring> // memcpy
+#include <ctime>
 
 constexpr uint64_t DEFAULT_TIMEOUT = 5;
 
 constexpr int COOKIE_LEN = 48;
 constexpr int MAX_DESCRIPTION_LEN = 80;
 constexpr int TICKET_LEN = 7;
+
+constexpr uint32_t MIN_RESERVATION_ID = 10e6;
+constexpr uint32_t MAX_EVENT_ID = 10e6 - 1;
+
+// constexpr uint64_t BIG_PRIME = 982451653;
+constexpr uint64_t PRIMES[COOKIE_LEN] = {
+    15485863,  49979687,  86028121,
+    104395303, 122949829, 160481183,
+    160481219, 198491317, 198491329,
+    236887691, 256203161, 256203221,
+    295075147, 295075153, 314606869,
+    314606891, 334214459, 334214467,
+    353868013, 353868019, 373587883,
+    373587911, 393342739, 393342743,
+    413158511, 413158523, 433024223,
+    433024253, 452930459, 452930477,
+    472882027, 472882049, 492876847,
+    492876863, 512927357, 512927377,
+    533000389, 533000401, 553105243,
+    553105253, 573259391, 573259433,
+    593441843, 593441861, 613651349,
+    613651369, 633910099, 633910111
+};
+
+constexpr uint64_t SMALL_PRIMES[48 / 2] = {
+    2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41,
+    43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89
+};
+
+constexpr char MIN_COOKIE_CHAR = 33;
 
 struct Reservation {
     uint32_t reservation_id;
@@ -45,7 +76,7 @@ struct Ticket {
 struct Tickets {
     uint32_t reservation_id;
     uint16_t ticket_count;
-    Ticket *tickets;
+    Ticket *tickets = nullptr;
 };
 
 class Database {
@@ -64,8 +95,21 @@ private:
         uint16_t ticket_count;
         char cookie[COOKIE_LEN + 1] = { 0 };
 
-        ReservationInfo() = default;
+        ReservationInfo() = delete;
+        ReservationInfo(uint32_t event_id_, uint16_t ticket_count_)
+        : event_id(event_id_)
+        , ticket_count(ticket_count_) {}
         ~ReservationInfo() = default;
+
+        // It's relatively easy to prove that for two cookies are equal
+        // if and only if provided codes to generate them were the same
+        // number. It relies on the fact these numbers are from a finite
+        // (and relatively small) set.
+        void generate_cookie(uint64_t code) {
+            for (int i = 0; i < COOKIE_LEN; ++i) {
+                cookie[i] = (PRIMES[i] * code) % SMALL_PRIMES[i / 2] + MIN_COOKIE_CHAR;
+            }
+        }
     };
 
     struct ReservationTime {
@@ -80,9 +124,11 @@ private:
     };
 
     const uint64_t timeout;
-    std::unordered_map<uint32_t, Event> events;
+    std::unordered_map<uint32_t, Event> events; // can be an std::vector
     std::unordered_map<uint32_t, ReservationInfo> reservations;
     std::queue<ReservationTime> reservation_queue;
+    uint32_t free_reservation_id = MIN_RESERVATION_ID;
+    std::queue<uint32_t> unused_reservation_ids;
 
 public:
     struct EventInfo {
@@ -167,7 +213,8 @@ public:
             auto &event = events.at(event_id);
             clean_queue(current_time);
             if (event.ticket_count < ticket_count) {
-                std::cerr << "The number of tickets available for the event of ID equal to " << event_id << " is too small.\n";
+                std::cerr << "The number of tickets available for the event of ID equal to "
+                          << event_id << " is too small.\n";
                 return {};
             }
             event.ticket_count -= ticket_count;
@@ -175,6 +222,24 @@ public:
         } catch (std::exception &e) {
             std::cerr << "The event of ID equal to " << event_id << " does not exist.\n";
             // the event does not exist, bad request
+            return {};
+        }
+    }
+
+    std::optional<Tickets> get_tickets(uint32_t reservation_id, char const *cookie) {
+        const uint64_t current_time = get_seconds_from_epoch();
+        clean_queue(current_time);
+        try {
+            auto reservation = reservations.at(reservation_id);
+            if (!cmp_cookies(reservation.cookie, cookie)) {
+                std::cerr << "Passed cookie does not match the actual one.\n";
+                return {};
+            }
+            reservations.erase(reservation_id);
+            return confirm_reservation(reservation_id, reservation);
+        } catch (std::exception &e) {
+            std::cerr << "The reservation of ID equal to " << reservation_id << " does not exist.\n";
+            // the reservation does not exist, bad request
             return {};
         }
     }
@@ -187,11 +252,42 @@ private:
             ).count()
         );
     }
+    
+    static bool cmp_cookies(char const *s1, char const *s2) {
+        for (int i = 0; i < COOKIE_LEN; ++i)
+            if (s1[i] != s2[i])
+                return false;
+        return true;
+    }
+
+    static std::optional<Tickets> confirm_reservation(uint32_t reservation_id, const ReservationInfo &info) {
+        Tickets result;
+        result.ticket_count = info.ticket_count;
+        try {
+            result.tickets = new Ticket[info.ticket_count];
+        } catch (std::bad_alloc &e) {
+            std::cerr << "Allocating memory has failed.\n";
+            return {};
+        }
+
+        for (uint16_t i = 0; i < info.ticket_count; ++i) {
+            
+        }
+    }
+
+    uint32_t get_reservation_id() {
+        if (free_reservation_id + 1 < MIN_RESERVATION_ID) {
+            throw std::exception(); // TODO
+        }
+        return free_reservation_id++;
+    }
 
     Reservation make_reservation(const uint32_t event_id, const uint16_t ticket_count, const uint64_t expiration_time) {
-        uint32_t reservation_id = /* get it somehow lol */ 2;
+        uint32_t reservation_id = get_reservation_id(); // CAN throw an exception
         reservation_queue.push(ReservationTime(reservation_id, expiration_time));
-        const auto &it = reservations.emplace(reservation_id, ReservationInfo()).first;
+        ReservationInfo info(event_id, ticket_count);
+        info.generate_cookie(reservation_id);
+        const auto &it = reservations.emplace(reservation_id, info).first;
 
         return Reservation(
             reservation_id,
