@@ -1,4 +1,4 @@
-*
-!ticket_server.cpp
-!database.h
+/*
+!src/
 !.gitignore
+!README.md
